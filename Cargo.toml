@@ -20,3 +20,8 @@ futures-util = "0.3.31"
 sync_wrapper = { version = "1.0.2", features = ["futures"] }
 http-body = "1.0.1"
 arc-swap = "1.7.1"
+rustls-native-certs = "0.8.1"
+hyper-util = { version = "0.1.14", features = ["tokio"] }
+tokio-util = "0.7.15"
+mime = "0.3.17"
+encoding_rs = "0.8.35"

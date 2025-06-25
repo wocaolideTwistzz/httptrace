@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use http::{HeaderMap, Method, Uri, Version};
+use http::{HeaderMap, Method, Request as HttpRequest, Uri, Version};
 
 use crate::{Body, client::Client, stats::Recorder};
 
@@ -11,7 +11,6 @@ pub struct Request {
     headers: HeaderMap,
     body: Option<Body>,
     timeout: Option<Duration>,
-    read_timeout: Option<Duration>,
     version: Option<Version>,
 
     recorder: Option<Box<dyn Recorder>>,
@@ -24,8 +23,11 @@ pub struct RequestBuilder {
 
 impl Request {
     pub fn new(method: Method, uri: Uri) -> Self {
-        todo!();
-        // Self { method, uri }
+        Self {
+            method,
+            uri,
+            ..Default::default()
+        }
     }
 
     #[inline]
@@ -87,18 +89,6 @@ impl Request {
         &mut self.timeout
     }
 
-    /// Get the read timeout.
-    #[inline]
-    pub fn read_timeout(&self) -> Option<&Duration> {
-        self.read_timeout.as_ref()
-    }
-
-    /// Get a mutable reference to the read timeout.
-    #[inline]
-    pub fn read_timeout_mut(&mut self) -> &mut Option<Duration> {
-        &mut self.read_timeout
-    }
-
     /// Get the http version.
     #[inline]
     pub fn version(&self) -> Option<Version> {
@@ -121,7 +111,6 @@ impl Request {
         };
         let mut req = Request::new(self.method().clone(), self.uri().clone());
         *req.timeout_mut() = self.timeout().copied();
-        *req.read_timeout_mut() = self.read_timeout().copied();
         *req.headers_mut() = self.headers().clone();
         *req.version_mut() = self.version();
         req.body = body;
@@ -131,10 +120,49 @@ impl Request {
     pub fn recorder(&self) -> Option<&dyn Recorder> {
         self.recorder.as_deref()
     }
+
+    pub(crate) fn port(&self) -> u16 {
+        self.uri.port_u16().unwrap_or_else(|| {
+            if self.uri.scheme() == Some(&http::uri::Scheme::HTTPS) {
+                443
+            } else {
+                80
+            }
+        })
+    }
 }
 
 impl RequestBuilder {
     pub(super) fn new(client: Client, request: crate::Result<Request>) -> RequestBuilder {
         RequestBuilder { client, request }
+    }
+}
+
+impl TryFrom<Request> for HttpRequest<Body> {
+    type Error = crate::Error;
+
+    fn try_from(value: Request) -> Result<Self, Self::Error> {
+        let Request {
+            method,
+            uri,
+            headers,
+            body,
+            version,
+            ..
+        } = value;
+
+        let mut builder = HttpRequest::builder();
+
+        if let Some(version) = version {
+            builder = builder.version(version);
+        }
+
+        let mut req = builder
+            .method(method)
+            .uri(uri)
+            .body(body.unwrap_or_else(Body::empty))?;
+        *req.headers_mut() = headers;
+
+        Ok(req)
     }
 }

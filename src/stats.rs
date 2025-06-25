@@ -6,18 +6,13 @@ use std::{
 
 use hickory_resolver::config::NameServerConfig;
 use tokio::net::TcpStream;
+use tokio_rustls::client::TlsStream;
 
 #[derive(Debug, Clone, Default)]
 pub struct Stats {
     pub dns: Option<DnsStats>,
     pub tcp: Option<TcpStats>,
     pub tls: Option<TlsStats>,
-}
-
-impl Stats {
-    pub(crate) fn on_dns_start(&mut self) {
-        if self.dns.is_some() {}
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -54,17 +49,16 @@ pub trait Recorder {
         &self,
         name_servers: &[NameServerConfig],
         host: &str,
-        hit_cache: bool,
-        result: crate::Result<&[SocketAddr]>,
+        result: Result<(&[SocketAddr], bool), String>,
     );
 
     fn on_tcp_start(&self, dest: &SocketAddr);
 
-    fn on_tcp_done(&self, dest: &SocketAddr, stream: crate::Result<&TcpStream>);
+    fn on_tcp_done(&self, dest: &SocketAddr, stream: Result<&TcpStream, String>);
 
     fn on_tls_start(&self, stream: &TcpStream);
 
-    fn on_tls_done(&self);
+    fn on_tls_done(&self, stream: Result<&TlsStream<TcpStream>, String>);
 }
 
 pub struct StatsRecorder {
@@ -72,7 +66,7 @@ pub struct StatsRecorder {
 }
 
 impl Recorder for StatsRecorder {
-    fn on_dns_start(&self, name_servers: &[NameServerConfig], host: &str) {
+    fn on_dns_start(&self, _name_servers: &[NameServerConfig], _host: &str) {
         self.inner.lock().unwrap().start = Instant::now();
     }
 
@@ -80,22 +74,21 @@ impl Recorder for StatsRecorder {
         &self,
         _name_servers: &[NameServerConfig],
         _host: &str,
-        hit_cache: bool,
-        result: crate::Result<&[SocketAddr]>,
+        result: Result<(&[SocketAddr], bool), String>,
     ) {
         let mut inner = self.inner.lock().unwrap();
         inner.dns_done = Instant::now();
-        inner.dns_hit_cache = hit_cache;
+        inner.dns_hit_cache = result.as_ref().is_ok_and(|v| v.1);
         inner.dns_error = result.err().map(|e| e.to_string());
     }
 
     fn on_tcp_start(&self, dest: &SocketAddr) {}
 
-    fn on_tcp_done(&self, dest: &SocketAddr, stream: crate::Result<&TcpStream>) {}
+    fn on_tcp_done(&self, dest: &SocketAddr, stream: Result<&TcpStream, String>) {}
 
     fn on_tls_start(&self, stream: &TcpStream) {}
 
-    fn on_tls_done(&self) {}
+    fn on_tls_done(&self, stream: Result<&TlsStream<TcpStream>, String>) {}
 }
 
 #[derive(Debug, Clone)]

@@ -25,3 +25,4 @@ hyper-util = { version = "0.1.14", features = ["tokio"] }
 tokio-util = "0.7.15"
 mime = "0.3.17"
 encoding_rs = "0.8.35"
+base64 = "0.22.1"

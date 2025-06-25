@@ -11,6 +11,7 @@ use hickory_resolver::{
     name_server::{GenericConnector, TokioConnectionProvider},
     proto::runtime::TokioRuntimeProvider,
 };
+use http::{HeaderValue, Method};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use rustls::{ClientConfig, RootCertStore};
 use tokio::{
@@ -19,7 +20,12 @@ use tokio::{
 };
 use tokio_rustls::{TlsConnector, client::TlsStream};
 
-use crate::{request::Request, response::Response, skip_verify::SkipVerifier};
+use crate::{
+    into_uri::IntoUri,
+    request::{Request, RequestBuilder},
+    response::Response,
+    skip_verify::SkipVerifier,
+};
 
 #[derive(Clone, Debug)]
 pub struct Client {
@@ -31,8 +37,25 @@ impl Client {
         ClientBuilder::new()
     }
 
-    pub async fn do_request(&self, request: Request) -> crate::Result<Response> {
-        self.inner.do_request(request).await
+    pub fn get<U: IntoUri>(&self, u: U) -> RequestBuilder {
+        self.request(Method::GET, u)
+    }
+
+    pub fn post<U: IntoUri>(&self, u: U) -> RequestBuilder {
+        self.request(Method::POST, u)
+    }
+
+    pub fn head<U: IntoUri>(&self, u: U) -> RequestBuilder {
+        self.request(Method::HEAD, u)
+    }
+
+    pub fn request<U: IntoUri>(&self, method: Method, u: U) -> RequestBuilder {
+        let req = u.into_uri().map(|uri| Request::new(method, uri));
+        RequestBuilder::new(self.clone(), req)
+    }
+
+    pub async fn execute(&self, request: Request) -> crate::Result<Response> {
+        self.inner.execute(request).await
     }
 }
 
@@ -43,6 +66,7 @@ pub(crate) struct ClientRef {
     dns_overrides: HashMap<String, Vec<IpAddr>>,
     skip_tls_verify: bool,
     alpn_protocols: Option<Vec<Alpn>>,
+    disable_auto_set_header: bool,
     prefer_ipv6: bool,
 
     dns_timeout: Duration,
@@ -57,6 +81,7 @@ pub struct ClientBuilder {
     name_servers: Option<Vec<NameServerConfig>>,
     headers: Option<http::HeaderMap>,
     skip_tls_verify: bool,
+    disable_auto_set_header: bool,
     alpn_protocols: Option<Vec<Alpn>>,
     dns_overrides: HashMap<String, Vec<IpAddr>>,
 
@@ -92,6 +117,7 @@ impl ClientBuilder {
                 local_addr: self.local_addr,
                 skip_tls_verify: self.skip_tls_verify,
                 alpn_protocols: self.alpn_protocols,
+                disable_auto_set_header: self.disable_auto_set_header,
                 dns_overrides: self.dns_overrides,
                 dns_timeout: self.dns_timeout.unwrap_or(FAR_INTERVAL), // or far future
                 tcp_timeout: self.tcp_timeout.unwrap_or(FAR_INTERVAL), // or far future
@@ -156,10 +182,15 @@ impl ClientBuilder {
         self.skip_tls_verify = true;
         self
     }
+
+    pub fn disable_auto_set_header(mut self) -> Self {
+        self.disable_auto_set_header = true;
+        self
+    }
 }
 
 impl ClientRef {
-    pub(crate) async fn do_request(&self, request: Request) -> crate::Result<Response> {
+    pub(crate) async fn execute(&self, mut request: Request) -> crate::Result<Response> {
         let timeout = *request.timeout().unwrap_or(&FAR_INTERVAL);
 
         tokio::time::timeout(timeout, async {
@@ -168,6 +199,18 @@ impl ClientRef {
             let is_https = request.uri().scheme() == Some(&http::uri::Scheme::HTTPS);
 
             let stream = self.tcp_connect(&request, addrs).await?;
+
+            if !self.disable_auto_set_header {
+                let host = request.uri().host().ok_or(crate::Error::EmptyResolveResult)?.to_string();
+                if request.headers().get(http::header::HOST).is_none() {
+                    request
+                        .headers_mut()
+                        .insert(http::header::HOST, host.parse()?);
+                }
+                if request.headers().get(http::header::USER_AGENT).is_none() {
+                    request.headers_mut().insert(http::header::USER_AGENT, HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"));
+                }
+            }
 
             if is_https {
                 let tls_stream = self.tls_handshake(stream, &request).await?;
@@ -274,6 +317,7 @@ impl ClientRef {
         stream: TcpStream,
         request: &Request,
     ) -> crate::Result<TlsStream<TcpStream>> {
+        ensure_crypto_provider();
         if let Some(recorder) = request.recorder() {
             recorder.on_tls_start(&stream);
         }
@@ -449,14 +493,15 @@ impl std::fmt::Display for Alpn {
     }
 }
 
-static INIT_TLS: Once = Once::new();
-
 const FALLBACK_INTERVAL: Duration = Duration::from_secs(3);
 
 const FAR_INTERVAL: Duration = Duration::from_secs(86400 * 365 * 30);
 
+// Initialize crypto provider once
+static INIT: Once = Once::new();
+
 fn ensure_crypto_provider() {
-    INIT_TLS.call_once(|| {
+    INIT.call_once(|| {
         let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
     });
 }

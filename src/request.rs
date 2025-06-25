@@ -1,8 +1,8 @@
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
-use http::{HeaderMap, Method, Request as HttpRequest, Uri, Version};
+use http::{HeaderMap, HeaderName, HeaderValue, Method, Request as HttpRequest, Uri, Version};
 
-use crate::{Body, client::Client, stats::Recorder};
+use crate::{client::Client, response::Response, stats::Recorder, Body};
 
 #[derive(Default)]
 pub struct Request {
@@ -11,7 +11,7 @@ pub struct Request {
     headers: HeaderMap,
     body: Option<Body>,
     timeout: Option<Duration>,
-    version: Option<Version>,
+    version: Version,
 
     recorder: Option<Box<dyn Recorder>>,
 }
@@ -91,13 +91,13 @@ impl Request {
 
     /// Get the http version.
     #[inline]
-    pub fn version(&self) -> Option<Version> {
+    pub fn version(&self) -> Version {
         self.version
     }
 
     /// Get a mutable reference to the http version.
     #[inline]
-    pub fn version_mut(&mut self) -> &mut Option<Version> {
+    pub fn version_mut(&mut self) -> &mut Version {
         &mut self.version
     }
 
@@ -136,6 +136,146 @@ impl RequestBuilder {
     pub(super) fn new(client: Client, request: crate::Result<Request>) -> RequestBuilder {
         RequestBuilder { client, request }
     }
+
+    pub async fn send(self) -> crate::Result<Response> {
+        self.client.execute(self.request?).await
+    } 
+    
+    /// Assemble a builder starting from an existing `Client` and a `Request`.
+    pub fn from_parts(client: Client, request: Request) -> RequestBuilder {
+        RequestBuilder {
+            client,
+            request: crate::Result::Ok(request),
+        }
+    }
+
+    
+    /// Add a `Header` to this Request.
+    pub fn header<K, V>(self, key: K, value: V) -> RequestBuilder
+    where
+        HeaderName: TryFrom<K>,
+        <HeaderName as TryFrom<K>>::Error: Into<http::Error>,
+        HeaderValue: TryFrom<V>,
+        <HeaderValue as TryFrom<V>>::Error: Into<http::Error>,
+    {
+        self.header_sensitive(key, value, false)
+    }
+
+    /// Add a `Header` to this Request with ability to define if `header_value` is sensitive.
+    fn header_sensitive<K, V>(mut self, key: K, value: V, sensitive: bool) -> RequestBuilder
+    where
+        HeaderName: TryFrom<K>,
+        <HeaderName as TryFrom<K>>::Error: Into<http::Error>,
+        HeaderValue: TryFrom<V>,
+        <HeaderValue as TryFrom<V>>::Error: Into<http::Error>,
+    {
+        let mut error: Option<crate::Error> = None;
+        if let Ok(ref mut req) = self.request {
+            match <HeaderName as TryFrom<K>>::try_from(key) {
+                Ok(key) => match <HeaderValue as TryFrom<V>>::try_from(value) {
+                    Ok(mut value) => {
+                        // We want to potentially make an unsensitive header
+                        // to be sensitive, not the reverse. So, don't turn off
+                        // a previously sensitive header.
+                        if sensitive {
+                            value.set_sensitive(true);
+                        }
+                        req.headers_mut().append(key, value);
+                    }
+                    Err(e) => error = Some(e.into().into()),
+                },
+                Err(e) => error = Some(e.into().into()),
+            };
+        }
+        if let Some(err) = error {
+            self.request = Err(err);
+        }
+        self
+    }
+
+    /// Add a set of Headers to the existing ones on this Request.
+    ///
+    /// The headers will be merged in to any already set.
+    pub fn headers(mut self, headers: HeaderMap) -> RequestBuilder {
+        if let Ok(ref mut req) = self.request {
+            *req.headers_mut() = headers;
+        }
+        self
+    }
+
+    /// Enable HTTP basic authentication.
+    pub fn basic_auth<U, P>(self, username: U, password: Option<P>) -> RequestBuilder
+    where
+        U: fmt::Display,
+        P: fmt::Display,
+    {
+        let header_value = crate::util::basic_auth(username, password);
+        self.header_sensitive(http::header::AUTHORIZATION, header_value, true)
+    }
+
+    /// Enable HTTP bearer authentication.
+    pub fn bearer_auth<T>(self, token: T) -> RequestBuilder
+    where
+        T: fmt::Display,
+    {
+        let header_value = format!("Bearer {}", token);
+        self.header_sensitive(http::header::AUTHORIZATION, header_value, true)
+    }
+
+
+    /// Set the request body.
+    pub fn body<T: Into<Body>>(mut self, body: T) -> RequestBuilder {
+        if let Ok(ref mut req) = self.request {
+            *req.body_mut() = Some(body.into());
+        }
+        self
+    }
+
+    /// Enables a request timeout.
+    ///
+    /// The timeout is applied from when the request starts connecting until the
+    /// response body has finished. It affects only this request and overrides
+    /// the timeout configured using `ClientBuilder::timeout()`.
+    pub fn timeout(mut self, timeout: Duration) -> RequestBuilder {
+        if let Ok(ref mut req) = self.request {
+            *req.timeout_mut() = Some(timeout);
+        }
+        self
+    }
+
+    /// Set HTTP version
+    pub fn version(mut self, version: Version) -> RequestBuilder {
+        if let Ok(ref mut req) = self.request {
+            req.version = version;
+        }
+        self
+    }
+
+    /// Build a `Request`, which can be inspected, modified and executed with
+    /// `Client::execute()`.
+    pub fn build(self) -> crate::Result<Request> {
+        self.request
+    }
+
+    /// Build a `Request`, which can be inspected, modified and executed with
+    /// `Client::execute()`.
+    ///
+    /// This is similar to [`RequestBuilder::build()`], but also returns the
+    /// embedded `Client`.
+    pub fn build_split(self) -> (Client, crate::Result<Request>) {
+        (self.client, self.request)
+    }
+
+    pub fn try_clone(&self) -> Option<RequestBuilder> {
+        self.request
+            .as_ref()
+            .ok()
+            .and_then(|req| req.try_clone())
+            .map(|req| RequestBuilder {
+                client: self.client.clone(),
+                request: Ok(req),
+            })
+    }
 }
 
 impl TryFrom<Request> for HttpRequest<Body> {
@@ -150,16 +290,11 @@ impl TryFrom<Request> for HttpRequest<Body> {
             version,
             ..
         } = value;
-
-        let mut builder = HttpRequest::builder();
-
-        if let Some(version) = version {
-            builder = builder.version(version);
-        }
-
-        let mut req = builder
+ 
+        let mut req = HttpRequest::builder()
             .method(method)
             .uri(uri)
+            .version(version)
             .body(body.unwrap_or_else(Body::empty))?;
         *req.headers_mut() = headers;
 

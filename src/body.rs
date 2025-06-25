@@ -162,18 +162,7 @@ impl Body {
             Inner::Reusable(ref chunk) => Some(Body::reusable(chunk.clone())),
             Inner::Streaming { .. } => None,
         }
-    }
-
-    pub(crate) fn into_stream(self) -> DataStream<Body> {
-        DataStream(self)
-    }
-
-    pub(crate) fn content_length(&self) -> Option<u64> {
-        match self.inner {
-            Inner::Reusable(ref bytes) => Some(bytes.len() as u64),
-            Inner::Streaming(ref body) => body.size_hint().exact(),
-        }
-    }
+    } 
 }
 
 impl Default for Body {

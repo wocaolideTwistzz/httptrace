@@ -29,6 +29,9 @@ pub enum Error {
     #[error("http error {0}")]
     Http(#[from] http::Error),
 
+    #[error("http invalid header value {0}")]
+    HttpInvalidHeader(#[from] http::header::InvalidHeaderValue),
+
     #[error("host required")]
     HostRequired,
 

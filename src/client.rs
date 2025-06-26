@@ -27,6 +27,19 @@ use crate::{
     skip_verify::SkipVerifier,
 };
 
+const DEFAULT_DNS_TIMEOUT: Duration = Duration::from_secs(5);
+
+const DEFAULT_TCP_TIMEOUT: Duration = Duration::from_secs(30);
+
+const DEFAULT_TLS_TIMEOUT: Duration = Duration::from_secs(10);
+
+const FALLBACK_INTERVAL: Duration = Duration::from_secs(3);
+
+const FAR_INTERVAL: Duration = Duration::from_secs(86400 * 365 * 30);
+
+// Initialize crypto provider once
+static INIT: Once = Once::new();
+
 #[derive(Clone, Debug)]
 pub struct Client {
     inner: Arc<ClientRef>,
@@ -119,9 +132,9 @@ impl ClientBuilder {
                 alpn_protocols: self.alpn_protocols,
                 disable_auto_set_header: self.disable_auto_set_header,
                 dns_overrides: self.dns_overrides,
-                dns_timeout: self.dns_timeout.unwrap_or(FAR_INTERVAL), // or far future
-                tcp_timeout: self.tcp_timeout.unwrap_or(FAR_INTERVAL), // or far future
-                tls_timeout: self.tls_timeout.unwrap_or(FAR_INTERVAL), // or far future
+                dns_timeout: self.dns_timeout.unwrap_or(DEFAULT_DNS_TIMEOUT), 
+                tcp_timeout: self.tcp_timeout.unwrap_or(DEFAULT_TCP_TIMEOUT),  
+                tls_timeout: self.tls_timeout.unwrap_or(DEFAULT_TLS_TIMEOUT),  
                 prefer_ipv6: self.lookup_ip_strategy.is_some_and(|v| {
                     v == LookupIpStrategy::Ipv6Only || v == LookupIpStrategy::Ipv6thenIpv4
                 }),
@@ -212,6 +225,8 @@ impl ClientRef {
                 }
             }
 
+            
+ 
             if is_https {
                 let tls_stream = self.tls_handshake(stream, &request).await?;
 
@@ -229,13 +244,14 @@ impl ClientRef {
     ) -> crate::Result<(Vec<SocketAddr>, bool)> {
         let host = request.uri().host().ok_or(crate::Error::HostRequired)?;
         if let Some(recorder) = request.recorder() {
-            recorder.on_dns_start(self.resolver.config().name_servers(), host);
+            recorder.on_dns_start(request, self.resolver.config().name_servers(), host);
         }
 
         let ret = self._dns_resolve(request).await;
 
         if let Some(recorder) = request.recorder() {
             recorder.on_dns_done(
+                request,
                 self.resolver.config().name_servers(),
                 host,
                 ret.as_ref()
@@ -271,7 +287,7 @@ impl ClientRef {
                     match addrs.next() {
                         Some(addr) => {
                             if let Some(recorder) = request.recorder() {
-                                recorder.on_tcp_start(&addr);
+                                recorder.on_tcp_start(request, &addr);
                             }
                             if let Some(tx) = tx_opt.clone() {
                                 let local_addr = self.local_addr;
@@ -294,7 +310,7 @@ impl ClientRef {
                 conn_ret = rx.recv() => match conn_ret {
                     Some((addr, ret)) => {
                         if let Some(recorder) = request.recorder() {
-                            recorder.on_tcp_done(&addr, ret.as_ref().map_err(|e|e.to_string()));
+                            recorder.on_tcp_done(request, &addr, ret.as_ref().map_err(|e|e.to_string()));
                         }
                         if let Ok(ret) = ret {
                             result = Ok(ret);
@@ -319,13 +335,13 @@ impl ClientRef {
     ) -> crate::Result<TlsStream<TcpStream>> {
         ensure_crypto_provider();
         if let Some(recorder) = request.recorder() {
-            recorder.on_tls_start(&stream);
+            recorder.on_tls_start(request, &stream);
         }
 
         let ret = self._tls_handshake(stream, request).await;
 
         if let Some(recorder) = request.recorder() {
-            recorder.on_tls_done(ret.as_ref().map_err(|e| e.to_string()));
+            recorder.on_tls_done(request, ret.as_ref().map_err(|e| e.to_string()));
         }
         ret
     }
@@ -438,6 +454,10 @@ impl ClientRef {
         stream: TcpStream,
         request: Request,
     ) -> crate::Result<Response> {
+        if let Some(recorder) = request.recorder() {
+            recorder.on_request_start(&request);
+        }
+
         let (mut tx, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
 
         tokio::spawn(async move {
@@ -453,6 +473,10 @@ impl ClientRef {
         stream: TlsStream<TcpStream>,
         request: Request,
     ) -> crate::Result<Response> {
+        if let Some(recorder) = request.recorder() {
+            recorder.on_request_start(&request);
+        }
+
         let is_h2 = {
             if let Some(alpn) = stream.get_ref().1.alpn_protocol() {
                 String::from_utf8_lossy(alpn) == "h2"
@@ -498,13 +522,6 @@ impl std::fmt::Display for Alpn {
         }
     }
 }
-
-const FALLBACK_INTERVAL: Duration = Duration::from_secs(3);
-
-const FAR_INTERVAL: Duration = Duration::from_secs(86400 * 365 * 30);
-
-// Initialize crypto provider once
-static INIT: Once = Once::new();
 
 fn ensure_crypto_provider() {
     INIT.call_once(|| {

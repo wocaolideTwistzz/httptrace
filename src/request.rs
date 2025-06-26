@@ -249,6 +249,13 @@ impl RequestBuilder {
         self
     }
 
+    pub fn recorder(mut self, recorder: Box<dyn Recorder>) -> RequestBuilder {
+        if let Ok(ref mut req) = self.request {
+            req.recorder = Some(recorder);
+        }
+        self
+    }
+
     /// Build a `Request`, which can be inspected, modified and executed with
     /// `Client::execute()`.
     pub fn build(self) -> crate::Result<Request> {

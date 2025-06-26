@@ -1,6 +1,5 @@
 use http::HeaderValue;
 
-
 pub fn basic_auth<U, P>(username: U, password: Option<P>) -> HeaderValue
 where
     U: std::fmt::Display,

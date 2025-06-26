@@ -162,7 +162,7 @@ impl Body {
             Inner::Reusable(ref chunk) => Some(Body::reusable(chunk.clone())),
             Inner::Streaming { .. } => None,
         }
-    } 
+    }
 }
 
 impl Default for Body {

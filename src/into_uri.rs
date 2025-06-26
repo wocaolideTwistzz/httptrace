@@ -1,6 +1,5 @@
 use http::Uri;
 
-
 /// A trait to try to convert some type into a `Uri`.
 ///
 /// This trait is "sealed", such that only types within rquest can
@@ -9,13 +8,13 @@ pub trait IntoUri: IntoUriSealed {}
 
 impl IntoUri for Uri {}
 impl IntoUri for String {}
-impl<'a> IntoUri for &'a str {}
-impl<'a> IntoUri for &'a String {}
+impl IntoUri for &str {}
+impl IntoUri for &String {}
 
 pub trait IntoUriSealed {
     // Besides parsing as a valid `Uri`, the `Uri` must be a valid
     // `http::Uri`, in that it makes sense to use in a network request.
-    fn into_uri(self) -> crate::Result<Uri>; 
+    fn into_uri(self) -> crate::Result<Uri>;
 }
 
 impl IntoUriSealed for Uri {
@@ -28,20 +27,20 @@ impl IntoUriSealed for Uri {
     }
 }
 
-impl<'a> IntoUriSealed for &'a str {
+impl IntoUriSealed for &str {
     fn into_uri(self) -> crate::Result<Uri> {
         self.parse::<Uri>()?.into_uri()
-    } 
+    }
 }
 
-impl<'a> IntoUriSealed for &'a String {
+impl IntoUriSealed for &String {
     fn into_uri(self) -> crate::Result<Uri> {
         (&**self).into_uri()
-    } 
+    }
 }
 
 impl IntoUriSealed for String {
     fn into_uri(self) -> crate::Result<Uri> {
         (&*self).into_uri()
-    } 
+    }
 }

@@ -440,7 +440,9 @@ impl ClientRef {
     ) -> crate::Result<Response> {
         let (mut tx, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
 
-        tokio::spawn(async move { _ = conn.await });
+        tokio::spawn(async move {
+            _ = conn.await;
+        });
 
         let resp = tx.send_request(request.try_into()?).await?;
         Ok(Response::new(resp.map(super::body::boxed)))
@@ -463,12 +465,16 @@ impl ClientRef {
             let (mut tx, conn) =
                 hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(stream))
                     .await?;
-            tokio::spawn(async move { _ = conn.await });
+            tokio::spawn(async move {
+                _ = conn.await;
+            });
             tx.send_request(request.try_into()?).await?
         } else {
             let (mut tx, conn) =
                 hyper::client::conn::http1::handshake(TokioIo::new(stream)).await?;
-            tokio::spawn(async move { _ = conn.await });
+            tokio::spawn(async move {
+                _ = conn.await;
+            });
             tx.send_request(request.try_into()?).await?
         };
 

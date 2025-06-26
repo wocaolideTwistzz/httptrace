@@ -2,7 +2,7 @@ use std::{fmt, time::Duration};
 
 use http::{HeaderMap, HeaderName, HeaderValue, Method, Request as HttpRequest, Uri, Version};
 
-use crate::{client::Client, response::Response, stats::Recorder, Body};
+use crate::{Body, client::Client, response::Response, stats::Recorder};
 
 #[derive(Default)]
 pub struct Request {
@@ -139,8 +139,8 @@ impl RequestBuilder {
 
     pub async fn send(self) -> crate::Result<Response> {
         self.client.execute(self.request?).await
-    } 
-    
+    }
+
     /// Assemble a builder starting from an existing `Client` and a `Request`.
     pub fn from_parts(client: Client, request: Request) -> RequestBuilder {
         RequestBuilder {
@@ -149,7 +149,6 @@ impl RequestBuilder {
         }
     }
 
-    
     /// Add a `Header` to this Request.
     pub fn header<K, V>(self, key: K, value: V) -> RequestBuilder
     where
@@ -222,7 +221,6 @@ impl RequestBuilder {
         self.header_sensitive(http::header::AUTHORIZATION, header_value, true)
     }
 
-
     /// Set the request body.
     pub fn body<T: Into<Body>>(mut self, body: T) -> RequestBuilder {
         if let Ok(ref mut req) = self.request {
@@ -290,7 +288,7 @@ impl TryFrom<Request> for HttpRequest<Body> {
             version,
             ..
         } = value;
- 
+
         let mut req = HttpRequest::builder()
             .method(method)
             .uri(uri)
